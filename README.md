@@ -1,44 +1,94 @@
-## RSA classical vs quantum demo
+# Classical Brute Force vs. Grover Demo
 
-This workspace contains two small presentation-oriented Python demos:
+This project is a small educational demo for presentations about quantum attacks on classical search problems. It compares:
 
-- `brute_force_demo.py` for classical trial-division factorization on a CPU
-- `quanten_demo.py` for the current Qiskit environment check around Shor factoring
+- classical CPU brute-force search with linear scaling $O(N)$
+- Grover's algorithm with quadratic speedup $O(\sqrt{N})$
 
-The workspace now uses a local virtual environment in `.venv` with the current packages:
+The demo searches for the same hidden target bitstring in both modes.
 
-- `qiskit==2.4.1`
-- `qiskit-aer==0.17.2`
-- `qiskit-ibm-runtime==0.46.1`
+## Important framing
 
-### Run the classical demo
+This is **not** a wall-clock speed demo.
 
-```powershell
-.venv\Scripts\python.exe brute_force_demo.py
+Real IBM Quantum hardware is usually slower than a laptop for these tiny examples because of queueing, transpilation, calibration overhead, measurement overhead, and hardware noise. The meaningful comparison here is the algorithmic scaling:
+
+- classical search: $O(N)$ checked candidates
+- Grover search: $O(\sqrt{N})$ oracle rounds
+
+## Project structure
+
+```text
+src/
+	classical_bruteforce.py
+	grover.py
+	ibm_backend.py
+	visualization.py
+	main.py
+README.md
+requirements.txt
 ```
 
-### Run the quantum demo
+## Setup
 
-Use the local simulator:
+Install dependencies:
 
-```powershell
-.venv\Scripts\python.exe quanten_demo.py
+```bash
+pip install -r requirements.txt
 ```
 
-Use an IBM Quantum backend:
+Set your IBM token only if you want to use real hardware:
 
-```powershell
-$env:IBM_QUANTUM_TOKEN="<your-token>"
-.venv\Scripts\python.exe quanten_demo.py --backend-name ibm_brisbane
+```bash
+export IBM_QUANTUM_TOKEN=your_token_here
 ```
 
-### Qiskit note
+PowerShell equivalent:
 
-The currently installed Qiskit stack does not expose a built-in high-level `Shor` class anymore.
+```powershell
+$env:IBM_QUANTUM_TOKEN="your_token_here"
+```
 
-That means `quanten_demo.py` can verify the selected simulator or IBM backend, but it cannot factor `N = 15` through `qiskit.algorithms.Shor` because that API no longer exists in current Qiskit.
+## Run examples
 
-If you need an actual Shor factorization demo, you need one of these two paths:
+Local simulator:
 
-- pin an older Qiskit stack that still shipped the high-level Shor implementation
-- replace the file with a manual order-finding circuit demo for `N = 15`
+```bash
+python src/main.py --mode simulator --n-qubits 3 --target 101 --shots 1024
+```
+
+IBM Quantum hardware:
+
+```bash
+python src/main.py --mode ibm --n-qubits 3 --target 101 --shots 1024
+```
+
+If IBM credentials are missing or the IBM runtime package is unavailable, `--mode ibm` automatically falls back to the local simulator and prints the reason.
+
+## Command-line options
+
+- `--mode simulator|ibm`
+- `--n-qubits 2|3|4|5`
+- `--target bitstring`
+- `--shots 1024`
+
+Valid search spaces are:
+
+- `n = 2` for $N = 4$
+- `n = 3` for $N = 8$
+- `n = 4` for $N = 16$
+- `n = 5` for $N = 32$ (optional larger example)
+
+## What the demo reports
+
+For each run, the program prints:
+
+- classical number of checked candidates
+- Grover iteration count using $\left\lfloor \frac{\pi}{4}\sqrt{2^n} \right\rfloor$
+- measured result distribution
+- success probability for the target bitstring
+
+It also saves two plots in `outputs/`:
+
+- a bar chart of measured quantum states
+- a comparison bar chart of brute-force checks vs. Grover iterations
