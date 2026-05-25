@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 
+from dotenv import load_dotenv
+
 from classical_bruteforce import search_hidden_key
 from grover import GroverRunResult, run_grover_simulator
 from ibm_backend import run_grover_ibm_or_fallback
@@ -25,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-qubits",
         type=int,
-        choices=[2, 3, 4, 5],
+        choices=[2, 3, 4, 5, 6, 7, 8],
         required=True,
         help="Number of qubits and therefore search bits.",
     )
@@ -125,6 +127,7 @@ def print_summary(args: argparse.Namespace, grover_result: GroverRunResult) -> N
 def main() -> None:
     """Validate input, run the selected demo mode, and print the results."""
 
+    load_dotenv()
     args = parse_args()
     validate_args(args)
     grover_result = run_quantum_demo(args.mode, args.target, args.shots)

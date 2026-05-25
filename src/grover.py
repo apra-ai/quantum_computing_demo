@@ -145,49 +145,50 @@ def write_execution_log(log_payload: dict[str, object]) -> str:
     return str(log_path)
 
 
-def run_grover_with_backend(
+def _build_run_result(
+    *,
     target: str,
     shots: int,
-    backend,
+    iterations: int,
+    counts: dict[str, int],
     backend_label: str,
     mode_used: str,
-    fallback_reason: str | None = None,
+    circuit: QuantumCircuit,
+    transpiled_circuit: QuantumCircuit,
+    result_metadata: object,
+    job_id: str | None,
+    write_log: bool,
+    fallback_reason: str | None,
 ) -> GroverRunResult:
-    """Execute the Grover circuit on any backend exposing a run method."""
+    """Assemble the shared result object and optional JSON log."""
 
-    circuit, iterations = build_grover_circuit(target)
-    transpiled_circuit = transpile(circuit, backend)
-    job = backend.run(transpiled_circuit, shots=shots)
-    job_id_getter = getattr(job, "job_id", None)
-    job_id = str(job_id_getter()) if callable(job_id_getter) else None
-    result = job.result()
-    raw_counts = result.get_counts()
-    counts = _normalize_counts(dict(raw_counts), len(target))
     success_probability = counts.get(target, 0) / shots
-    log_file_path = write_execution_log(
-        {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "request": {
-                "target": target,
-                "shots": shots,
-                "requested_mode": mode_used,
-                "backend_label": backend_label,
-                "search_space_size": 2 ** len(target),
-                "iterations": iterations,
-                "circuit": _serialize_circuit(circuit),
-                "transpiled_circuit": _serialize_circuit(transpiled_circuit),
-            },
-            "response": {
-                "job_id": job_id,
-                "backend_label": backend_label,
-                "mode_used": mode_used,
-                "success_probability": success_probability,
-                "counts": counts,
-                "result_metadata": getattr(result, "to_dict", lambda: {})(),
-            },
-            "fallback_reason": fallback_reason,
-        }
-    )
+    log_file_path = None
+    if write_log:
+        log_file_path = write_execution_log(
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "request": {
+                    "target": target,
+                    "shots": shots,
+                    "requested_mode": mode_used,
+                    "backend_label": backend_label,
+                    "search_space_size": 2 ** len(target),
+                    "iterations": iterations,
+                    "circuit": _serialize_circuit(circuit),
+                    "transpiled_circuit": _serialize_circuit(transpiled_circuit),
+                },
+                "response": {
+                    "job_id": job_id,
+                    "backend_label": backend_label,
+                    "mode_used": mode_used,
+                    "success_probability": success_probability,
+                    "counts": counts,
+                    "result_metadata": result_metadata,
+                },
+                "fallback_reason": fallback_reason,
+            }
+        )
 
     return GroverRunResult(
         n_qubits=len(target),
@@ -205,7 +206,92 @@ def run_grover_with_backend(
     )
 
 
-def run_grover_simulator(target: str, shots: int) -> GroverRunResult:
+def _extract_sampler_counts(primitive_result) -> tuple[dict[str, int], object]:
+    """Extract counts and metadata from a SamplerV2 result."""
+
+    pub_result = primitive_result[0]
+    register_keys = list(pub_result.data.keys())
+    if not register_keys:
+        raise RuntimeError("Sampler result did not contain any classical register data.")
+
+    register_name = register_keys[0]
+    register_data = getattr(pub_result.data, register_name)
+    return dict(register_data.get_counts()), pub_result.metadata
+
+
+def run_grover_with_backend(
+    target: str,
+    shots: int,
+    backend,
+    backend_label: str,
+    mode_used: str,
+    write_log: bool = True,
+    fallback_reason: str | None = None,
+) -> GroverRunResult:
+    """Execute the Grover circuit on any backend exposing a run method."""
+
+    circuit, iterations = build_grover_circuit(target)
+    transpiled_circuit = transpile(circuit, backend)
+    job = backend.run(transpiled_circuit, shots=shots)
+    job_id_getter = getattr(job, "job_id", None)
+    job_id = str(job_id_getter()) if callable(job_id_getter) else None
+    result = job.result()
+    raw_counts = result.get_counts()
+    counts = _normalize_counts(dict(raw_counts), len(target))
+    return _build_run_result(
+        target=target,
+        shots=shots,
+        iterations=iterations,
+        counts=counts,
+        backend_label=backend_label,
+        mode_used=mode_used,
+        circuit=circuit,
+        transpiled_circuit=transpiled_circuit,
+        result_metadata=getattr(result, "to_dict", lambda: {})(),
+        job_id=job_id,
+        write_log=write_log,
+        fallback_reason=fallback_reason,
+    )
+
+
+def run_grover_with_sampler(
+    target: str,
+    shots: int,
+    backend,
+    sampler,
+    backend_label: str,
+    mode_used: str,
+    write_log: bool = True,
+    fallback_reason: str | None = None,
+) -> GroverRunResult:
+    """Execute the Grover circuit through a SamplerV2-compatible primitive."""
+
+    circuit, iterations = build_grover_circuit(target)
+    transpiled_circuit = transpile(circuit, backend)
+    job = sampler.run([transpiled_circuit], shots=shots)
+    job_id_getter = getattr(job, "job_id", None)
+    job_id = str(job_id_getter()) if callable(job_id_getter) else None
+    primitive_result = job.result()
+    raw_counts, result_metadata = _extract_sampler_counts(primitive_result)
+    counts = _normalize_counts(raw_counts, len(target))
+
+    return _build_run_result(
+        target=target,
+        shots=shots,
+        iterations=iterations,
+        counts=counts,
+        backend_label=backend_label,
+        mode_used=mode_used,
+        circuit=circuit,
+        transpiled_circuit=transpiled_circuit,
+        result_metadata=result_metadata,
+        job_id=job_id,
+        write_log=write_log,
+        fallback_reason=fallback_reason,
+    )
+
+
+def run_grover_simulator(target: str, shots: int, write_log: bool = True) -> GroverRunResult:
     """Execute Grover locally with Qiskit Aer."""
 
     simulator = AerSimulator()
@@ -215,4 +301,5 @@ def run_grover_simulator(target: str, shots: int) -> GroverRunResult:
         backend=simulator,
         backend_label=simulator.name,
         mode_used="simulator",
+        write_log=write_log,
     )

@@ -37,16 +37,24 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Set your IBM token only if you want to use real hardware:
+Create a `.env` file in the project root if you want to use real IBM hardware:
 
-```bash
-export IBM_QUANTUM_TOKEN=your_token_here
+```env
+IBM_QUANTUM_TOKEN=your_token_here
+IBM_QUANTUM_INSTANCE=your_instance_or_crn_here
+IBM_QUANTUM_BACKEND=ibm_brisbane
 ```
 
-PowerShell equivalent:
+The app loads `.env` automatically at startup, so you do not need to set `export` or `$env:` manually.
 
-```powershell
-$env:IBM_QUANTUM_TOKEN="your_token_here"
+`IBM_QUANTUM_INSTANCE` is optional in code, but in practice it is often needed when your IBM account has no default instance or when you want to force a specific one.
+
+`IBM_QUANTUM_BACKEND` is also optional. If you set it, the demo will try to use exactly that IBM hardware backend. If you leave it unset, the code automatically picks a hardware backend with enough qubits and a low queue.
+
+You can copy the template file first:
+
+```bash
+cp .env.example .env
 ```
 
 ## Run examples
