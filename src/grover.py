@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from math import floor, pi, sqrt
 from pathlib import Path
+from time import perf_counter
 import json
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
@@ -25,6 +26,9 @@ class GroverRunResult:
     mode_used: str
     search_space_size: int
     shots: int
+    quantum_runtime_seconds: float | None = None
+    wall_clock_seconds: float | None = None
+    queue_time_seconds: float | None = None
     job_id: str | None = None
     log_file_path: str | None = None
     fallback_reason: str | None = None
@@ -145,6 +149,77 @@ def write_execution_log(log_payload: dict[str, object]) -> str:
     return str(log_path)
 
 
+def _parse_runtime_timestamp(value: str | None) -> datetime | None:
+    """Parse IBM Runtime timestamps when present."""
+
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _extract_queue_time_seconds(metrics: dict[str, object] | None) -> float | None:
+    """Return queue wait time from IBM Runtime metrics when available."""
+
+    if not metrics:
+        return None
+
+    timestamps = metrics.get("timestamps") if isinstance(metrics, dict) else None
+    if not isinstance(timestamps, dict):
+        return None
+
+    created = _parse_runtime_timestamp(timestamps.get("created"))
+    running = _parse_runtime_timestamp(timestamps.get("running"))
+    if created is None or running is None:
+        return None
+    return max((running - created).total_seconds(), 0.0)
+
+
+def _extract_quantum_runtime_seconds(job, metrics: dict[str, object] | None) -> float | None:
+    """Return the pure IBM quantum runtime without queue time when available."""
+
+    if isinstance(metrics, dict):
+        usage = metrics.get("usage")
+        if isinstance(usage, dict):
+            quantum_seconds = usage.get("quantum_seconds")
+            if isinstance(quantum_seconds, (int, float)):
+                return float(quantum_seconds)
+
+        bss = metrics.get("bss")
+        if isinstance(bss, dict):
+            bss_seconds = bss.get("seconds")
+            if isinstance(bss_seconds, (int, float)):
+                return float(bss_seconds)
+
+    usage_estimation = getattr(job, "usage_estimation", None)
+    if isinstance(usage_estimation, dict):
+        quantum_seconds = usage_estimation.get("quantum_seconds")
+        if isinstance(quantum_seconds, (int, float)):
+            return float(quantum_seconds)
+
+    usage_getter = getattr(job, "usage", None)
+    if callable(usage_getter):
+        usage_value = usage_getter()
+        if isinstance(usage_value, (int, float)):
+            return float(usage_value)
+
+    return None
+
+
+def _extract_runtime_metrics(job) -> dict[str, object] | None:
+    """Read IBM Runtime job metrics if the job implementation exposes them."""
+
+    metrics_getter = getattr(job, "metrics", None)
+    if not callable(metrics_getter):
+        return None
+
+    try:
+        metrics = metrics_getter()
+    except Exception:
+        return None
+
+    return metrics if isinstance(metrics, dict) else None
+
+
 def _build_run_result(
     *,
     target: str,
@@ -156,6 +231,9 @@ def _build_run_result(
     circuit: QuantumCircuit,
     transpiled_circuit: QuantumCircuit,
     result_metadata: object,
+    quantum_runtime_seconds: float | None,
+    wall_clock_seconds: float | None,
+    queue_time_seconds: float | None,
     job_id: str | None,
     write_log: bool,
     fallback_reason: str | None,
@@ -182,6 +260,9 @@ def _build_run_result(
                     "job_id": job_id,
                     "backend_label": backend_label,
                     "mode_used": mode_used,
+                    "quantum_runtime_seconds": quantum_runtime_seconds,
+                    "wall_clock_seconds": wall_clock_seconds,
+                    "queue_time_seconds": queue_time_seconds,
                     "success_probability": success_probability,
                     "counts": counts,
                     "result_metadata": result_metadata,
@@ -200,6 +281,9 @@ def _build_run_result(
         mode_used=mode_used,
         search_space_size=2 ** len(target),
         shots=shots,
+        quantum_runtime_seconds=quantum_runtime_seconds,
+        wall_clock_seconds=wall_clock_seconds,
+        queue_time_seconds=queue_time_seconds,
         job_id=job_id,
         log_file_path=log_file_path,
         fallback_reason=fallback_reason,
@@ -232,10 +316,12 @@ def run_grover_with_backend(
 
     circuit, iterations = build_grover_circuit(target)
     transpiled_circuit = transpile(circuit, backend)
+    start_time = perf_counter()
     job = backend.run(transpiled_circuit, shots=shots)
     job_id_getter = getattr(job, "job_id", None)
     job_id = str(job_id_getter()) if callable(job_id_getter) else None
     result = job.result()
+    wall_clock_seconds = perf_counter() - start_time
     raw_counts = result.get_counts()
     counts = _normalize_counts(dict(raw_counts), len(target))
     return _build_run_result(
@@ -248,6 +334,9 @@ def run_grover_with_backend(
         circuit=circuit,
         transpiled_circuit=transpiled_circuit,
         result_metadata=getattr(result, "to_dict", lambda: {})(),
+        quantum_runtime_seconds=wall_clock_seconds,
+        wall_clock_seconds=wall_clock_seconds,
+        queue_time_seconds=0.0,
         job_id=job_id,
         write_log=write_log,
         fallback_reason=fallback_reason,
@@ -268,10 +357,13 @@ def run_grover_with_sampler(
 
     circuit, iterations = build_grover_circuit(target)
     transpiled_circuit = transpile(circuit, backend)
+    start_time = perf_counter()
     job = sampler.run([transpiled_circuit], shots=shots)
     job_id_getter = getattr(job, "job_id", None)
     job_id = str(job_id_getter()) if callable(job_id_getter) else None
     primitive_result = job.result()
+    wall_clock_seconds = perf_counter() - start_time
+    runtime_metrics = _extract_runtime_metrics(job)
     raw_counts, result_metadata = _extract_sampler_counts(primitive_result)
     counts = _normalize_counts(raw_counts, len(target))
 
@@ -284,7 +376,13 @@ def run_grover_with_sampler(
         mode_used=mode_used,
         circuit=circuit,
         transpiled_circuit=transpiled_circuit,
-        result_metadata=result_metadata,
+        result_metadata={
+            "sampler_metadata": result_metadata,
+            "runtime_metrics": runtime_metrics,
+        },
+        quantum_runtime_seconds=_extract_quantum_runtime_seconds(job, runtime_metrics),
+        wall_clock_seconds=wall_clock_seconds,
+        queue_time_seconds=_extract_queue_time_seconds(runtime_metrics),
         job_id=job_id,
         write_log=write_log,
         fallback_reason=fallback_reason,

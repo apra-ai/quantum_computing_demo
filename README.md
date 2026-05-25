@@ -107,3 +107,36 @@ The demo also saves a structured JSON execution log in `outputs/logs/`. Each log
 - the selected backend and transpiled circuit summary
 - the backend response counts and success probability
 - the fallback reason when IBM mode had to use the local simulator instead
+
+## Experiment runner
+
+The project also includes a separate batch runner in `src/experiment_runner.py`. It is independent from `src/main.py` and is meant for collecting timing data across many qubit counts.
+
+The runner can execute both CPU brute-force and Grover runs for a configurable list of bit sizes, save CSV and JSON summaries, and generate a combined runtime scaling plot.
+
+Example:
+
+```bash
+python src/experiment_runner.py --mode ibm --backend ibm_kingston --shots 1 --max-qubits 36 --target-mode last
+```
+
+Resume an existing batch and only run missing sizes:
+
+```bash
+python src/experiment_runner.py --mode ibm --shots 1 --max-qubits 36 --resume true
+```
+
+Run only a specific size and merge it into the existing CSV and JSON:
+
+```bash
+python src/experiment_runner.py --mode ibm --shots 1 --qubits 36 --resume true
+```
+
+By default, the runner writes its outputs into a dedicated folder under `outputs/evaluation_runtimes/`.
+
+Important notes:
+
+- Small `n_qubits` values can run on real IBM hardware.
+- Large `n_qubits` values may fail or become impractical because of circuit depth, transpilation limits, queueing, shot costs, and hardware constraints.
+- The runner catches per-size execution errors and continues unless `--stop-on-error true` is set.
+- With `--resume true`, the runner loads the existing CSV, skips already completed qubit sizes, updates the CSV and JSON, and rebuilds the runtime plot from the updated CSV.

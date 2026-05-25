@@ -67,3 +67,28 @@ def plot_search_comparison(
     figure.savefig(output_path, dpi=150)
     plt.close(figure)
     return output_path
+
+
+def plot_runtime_scaling(
+    n_qubits_values: list[int],
+    cpu_times: list[float],
+    grover_times: list[float],
+    output_path: Path,
+) -> Path:
+    """Save a combined runtime scaling plot for CPU and Grover experiments."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.plot(n_qubits_values, cpu_times, marker="o", linewidth=2, label="CPU brute force")
+    axis.plot(n_qubits_values, grover_times, marker="s", linewidth=2, label="Grover")
+    axis.set_title("Runtime scaling across qubit counts")
+    axis.set_xlabel("n_qubits")
+    axis.set_ylabel("Runtime (seconds)")
+    axis.set_yscale("log")
+    axis.grid(True, which="both", alpha=0.25)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=150)
+    plt.close(figure)
+    return output_path

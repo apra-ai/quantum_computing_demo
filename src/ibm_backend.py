@@ -118,13 +118,17 @@ def _write_fallback_log(
     )
 
 
-def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
+def run_grover_ibm_or_fallback(
+    target: str,
+    shots: int,
+    backend_name: str | None = None,
+) -> GroverRunResult:
     """Run on IBM hardware when possible, otherwise explain the simulator fallback."""
 
     load_dotenv()
     token = os.getenv("IBM_QUANTUM_TOKEN")
     instance = os.getenv("IBM_QUANTUM_INSTANCE")
-    backend_name = os.getenv("IBM_QUANTUM_BACKEND")
+    requested_backend_name = backend_name or os.getenv("IBM_QUANTUM_BACKEND")
     if not token:
         print("Warning: IBM_QUANTUM_TOKEN is not set. Falling back to local simulator.")
         local_result = run_grover_simulator(target, shots=shots, write_log=False)
@@ -134,7 +138,7 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
             shots=shots,
             requested_mode="ibm",
             requested_instance=instance,
-            requested_backend_name=backend_name,
+            requested_backend_name=requested_backend_name,
             fallback_reason=fallback_reason,
             local_result=local_result,
         )
@@ -156,7 +160,7 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
             shots=shots,
             requested_mode="ibm",
             requested_instance=instance,
-            requested_backend_name=backend_name,
+            requested_backend_name=requested_backend_name,
             fallback_reason=fallback_reason,
             local_result=local_result,
         )
@@ -180,7 +184,7 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
         backend = _select_ibm_backend(
             service,
             n_qubits=len(target),
-            backend_name=backend_name,
+            backend_name=requested_backend_name,
         )
         sampler = SamplerV2(mode=backend)
         return run_grover_with_sampler(
@@ -199,7 +203,7 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
             shots=shots,
             requested_mode="ibm",
             requested_instance=instance,
-            requested_backend_name=backend_name,
+            requested_backend_name=requested_backend_name,
             fallback_reason=fallback_reason,
             local_result=local_result,
         )
