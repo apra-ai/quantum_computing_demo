@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 
-from grover import GroverRunResult, run_grover_simulator, run_grover_with_backend
+from grover import GroverRunResult, run_grover_simulator, run_grover_with_backend, write_execution_log
 
 
 def _backend_name(backend) -> str:
@@ -65,16 +66,57 @@ def _select_ibm_backend(service, n_qubits: int):
     )[0]
 
 
+def _write_fallback_log(
+    target: str,
+    shots: int,
+    requested_mode: str,
+    fallback_reason: str,
+    local_result: GroverRunResult,
+) -> str:
+    """Persist a log entry for an IBM request that fell back to the simulator."""
+
+    return write_execution_log(
+        {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "request": {
+                "target": target,
+                "shots": shots,
+                "requested_mode": requested_mode,
+                "requested_backend_type": "ibm_quantum",
+                "search_space_size": 2 ** len(target),
+            },
+            "response": {
+                "mode_used": local_result.mode_used,
+                "backend_label": local_result.backend_label,
+                "job_id": local_result.job_id,
+                "success_probability": local_result.success_probability,
+                "counts": local_result.counts,
+            },
+            "fallback_reason": fallback_reason,
+            "note": "This run requested IBM Quantum execution but used the simulator fallback.",
+        }
+    )
+
+
 def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
     """Run on IBM hardware when possible, otherwise explain the simulator fallback."""
 
     token = os.getenv("IBM_QUANTUM_TOKEN")
     if not token:
         local_result = run_grover_simulator(target, shots=shots)
+        fallback_reason = "IBM_QUANTUM_TOKEN is not set, so the local simulator was used."
+        log_file_path = _write_fallback_log(
+            target=target,
+            shots=shots,
+            requested_mode="ibm",
+            fallback_reason=fallback_reason,
+            local_result=local_result,
+        )
         return GroverRunResult(
             **{
                 **local_result.__dict__,
-                "fallback_reason": "IBM_QUANTUM_TOKEN is not set, so the local simulator was used.",
+                "fallback_reason": fallback_reason,
+                "log_file_path": log_file_path,
             }
         )
 
@@ -82,10 +124,19 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
         from qiskit_ibm_runtime import QiskitRuntimeService
     except Exception as exc:  # pragma: no cover - optional dependency
         local_result = run_grover_simulator(target, shots=shots)
+        fallback_reason = f"qiskit-ibm-runtime could not be imported: {exc}"
+        log_file_path = _write_fallback_log(
+            target=target,
+            shots=shots,
+            requested_mode="ibm",
+            fallback_reason=fallback_reason,
+            local_result=local_result,
+        )
         return GroverRunResult(
             **{
                 **local_result.__dict__,
-                "fallback_reason": f"qiskit-ibm-runtime could not be imported: {exc}",
+                "fallback_reason": fallback_reason,
+                "log_file_path": log_file_path,
             }
         )
 
@@ -101,9 +152,18 @@ def run_grover_ibm_or_fallback(target: str, shots: int) -> GroverRunResult:
         )
     except Exception as exc:  # pragma: no cover - hardware path is optional
         local_result = run_grover_simulator(target, shots=shots)
+        fallback_reason = f"IBM execution failed, so the local simulator was used instead: {exc}"
+        log_file_path = _write_fallback_log(
+            target=target,
+            shots=shots,
+            requested_mode="ibm",
+            fallback_reason=fallback_reason,
+            local_result=local_result,
+        )
         return GroverRunResult(
             **{
                 **local_result.__dict__,
-                "fallback_reason": f"IBM execution failed, so the local simulator was used instead: {exc}",
+                "fallback_reason": fallback_reason,
+                "log_file_path": log_file_path,
             }
         )

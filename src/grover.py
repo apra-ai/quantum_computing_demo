@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import floor, pi, sqrt
+from pathlib import Path
+import json
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit_aer import AerSimulator
@@ -22,6 +25,8 @@ class GroverRunResult:
     mode_used: str
     search_space_size: int
     shots: int
+    job_id: str | None = None
+    log_file_path: str | None = None
     fallback_reason: str | None = None
 
 
@@ -108,6 +113,38 @@ def _normalize_counts(counts: dict[str, int], n_qubits: int) -> dict[str, int]:
     return normalized_counts
 
 
+def _outputs_log_dir() -> Path:
+    """Return the log directory used for execution traces."""
+
+    log_dir = Path(__file__).resolve().parent.parent / "outputs" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def _serialize_circuit(circuit: QuantumCircuit) -> dict[str, object]:
+    """Return a compact beginner-friendly summary of a circuit."""
+
+    operations = {str(name): int(count) for name, count in circuit.count_ops().items()}
+    return {
+        "name": circuit.name,
+        "num_qubits": circuit.num_qubits,
+        "num_clbits": circuit.num_clbits,
+        "depth": circuit.depth(),
+        "size": circuit.size(),
+        "operations": operations,
+        "diagram": str(circuit.draw(output="text")),
+    }
+
+
+def write_execution_log(log_payload: dict[str, object]) -> str:
+    """Persist one structured execution log to outputs/logs."""
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    log_path = _outputs_log_dir() / f"grover_run_{timestamp}.json"
+    log_path.write_text(json.dumps(log_payload, indent=2), encoding="utf-8")
+    return str(log_path)
+
+
 def run_grover_with_backend(
     target: str,
     shots: int,
@@ -121,9 +158,36 @@ def run_grover_with_backend(
     circuit, iterations = build_grover_circuit(target)
     transpiled_circuit = transpile(circuit, backend)
     job = backend.run(transpiled_circuit, shots=shots)
-    raw_counts = job.result().get_counts()
+    job_id_getter = getattr(job, "job_id", None)
+    job_id = str(job_id_getter()) if callable(job_id_getter) else None
+    result = job.result()
+    raw_counts = result.get_counts()
     counts = _normalize_counts(dict(raw_counts), len(target))
     success_probability = counts.get(target, 0) / shots
+    log_file_path = write_execution_log(
+        {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "request": {
+                "target": target,
+                "shots": shots,
+                "requested_mode": mode_used,
+                "backend_label": backend_label,
+                "search_space_size": 2 ** len(target),
+                "iterations": iterations,
+                "circuit": _serialize_circuit(circuit),
+                "transpiled_circuit": _serialize_circuit(transpiled_circuit),
+            },
+            "response": {
+                "job_id": job_id,
+                "backend_label": backend_label,
+                "mode_used": mode_used,
+                "success_probability": success_probability,
+                "counts": counts,
+                "result_metadata": getattr(result, "to_dict", lambda: {})(),
+            },
+            "fallback_reason": fallback_reason,
+        }
+    )
 
     return GroverRunResult(
         n_qubits=len(target),
@@ -135,6 +199,8 @@ def run_grover_with_backend(
         mode_used=mode_used,
         search_space_size=2 ** len(target),
         shots=shots,
+        job_id=job_id,
+        log_file_path=log_file_path,
         fallback_reason=fallback_reason,
     )
 

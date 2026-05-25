@@ -100,6 +100,8 @@ def print_summary(args: argparse.Namespace, grover_result: GroverRunResult) -> N
     print(f"  Requested mode: {args.mode}")
     print(f"  Mode used: {grover_result.mode_used}")
     print(f"  Backend: {grover_result.backend_label}")
+    if grover_result.job_id:
+        print(f"  Job ID: {grover_result.job_id}")
     print(f"  Grover iterations: {grover_result.iterations}")
     print(f"  Success probability: {grover_result.success_probability:.4f}")
     print(f"  Scaling reminder: O(sqrt(N))")
@@ -116,6 +118,8 @@ def print_summary(args: argparse.Namespace, grover_result: GroverRunResult) -> N
     print()
     print(f"Saved plot: {counts_plot}")
     print(f"Saved plot: {comparison_plot}")
+    if grover_result.log_file_path:
+        print(f"Saved log: {grover_result.log_file_path}")
 
 
 def main() -> None:

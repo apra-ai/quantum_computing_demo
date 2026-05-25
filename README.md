@@ -92,3 +92,10 @@ It also saves two plots in `outputs/`:
 
 - a bar chart of measured quantum states
 - a comparison bar chart of brute-force checks vs. Grover iterations
+
+The demo also saves a structured JSON execution log in `outputs/logs/`. Each log contains:
+
+- the request you sent to the quantum execution layer
+- the selected backend and transpiled circuit summary
+- the backend response counts and success probability
+- the fallback reason when IBM mode had to use the local simulator instead
