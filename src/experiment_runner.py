@@ -97,9 +97,21 @@ def parse_args() -> argparse.Namespace:
         description="Run repeated CPU and Grover experiments across multiple qubit sizes."
     )
     parser.add_argument("--mode", choices=["simulator", "ibm"], default="simulator")
+    parser.add_argument(
+        "--cpu-mode",
+        choices=["run", "skip"],
+        default="run",
+        help="Choose whether the classical CPU brute-force part should run or be skipped.",
+    )
     parser.add_argument("--backend", default=None, help="Optional IBM backend name such as ibm_kingston.")
     parser.add_argument("--shots", type=int, default=1024)
     parser.add_argument("--max-qubits", type=int, default=36)
+    parser.add_argument(
+        "--max-cpu-qubits",
+        type=int,
+        default=24,
+        help="Run real CPU brute force only up to this qubit count to avoid extreme host CPU load.",
+    )
     parser.add_argument(
         "--qubits",
         nargs="+",
@@ -121,6 +133,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--shots must be a positive integer.")
     if args.max_qubits < 2:
         raise ValueError("--max-qubits must be at least 2.")
+    if args.max_cpu_qubits < 2:
+        raise ValueError("--max-cpu-qubits must be at least 2.")
     if args.mode == "simulator" and args.backend:
         raise ValueError("--backend is only valid together with --mode ibm.")
     if args.qubits is not None and any(n_qubits < 2 for n_qubits in args.qubits):
@@ -277,18 +291,32 @@ def build_runtime_plot(rows: list[ExperimentRow], plot_path: Path) -> Path | Non
 def execute_one_run(
     *,
     mode: str,
+    cpu_mode: str,
     n_qubits: int,
     shots: int,
     target: str,
     backend_name: str | None,
+    max_cpu_qubits: int,
 ) -> ExperimentRow:
     """Run one CPU and Grover experiment and return the summary row."""
 
     search_space = 2**n_qubits
 
-    cpu_start = time.perf_counter()
-    classical_result = search_hidden_key(n_qubits=n_qubits, target=target)
-    cpu_time_seconds = time.perf_counter() - cpu_start
+    cpu_checked_candidates: int | None = None
+    cpu_time_seconds: float | None = None
+    cpu_note = ""
+    if cpu_mode == "skip":
+        cpu_note = "CPU brute force skipped because --cpu-mode skip was selected."
+    elif n_qubits <= max_cpu_qubits:
+        cpu_start = time.perf_counter()
+        classical_result = search_hidden_key(n_qubits=n_qubits, target=target)
+        cpu_time_seconds = time.perf_counter() - cpu_start
+        cpu_checked_candidates = classical_result.checked_candidates
+    else:
+        cpu_note = (
+            f"CPU brute force skipped above --max-cpu-qubits={max_cpu_qubits} "
+            f"to avoid extreme host CPU load."
+        )
 
     grover_result = run_quantum_experiment(
         mode=mode,
@@ -303,7 +331,7 @@ def execute_one_run(
         n_qubits=n_qubits,
         search_space=search_space,
         target=target,
-        cpu_checked_candidates=classical_result.checked_candidates,
+        cpu_checked_candidates=cpu_checked_candidates,
         cpu_time_seconds=cpu_time_seconds,
         grover_iterations=grover_result.iterations,
         grover_time_seconds=grover_time_seconds,
@@ -315,7 +343,7 @@ def execute_one_run(
         most_frequent_state=most_frequent_state,
         most_frequent_count=most_frequent_count,
         target_was_top_result=(most_frequent_state == target),
-        error=grover_result.fallback_reason or "",
+        error=grover_result.fallback_reason or cpu_note,
     )
 
 
@@ -347,7 +375,7 @@ def print_progress(index: int, total: int, row: ExperimentRow) -> None:
 
     print(
         f"[{index}/{total}] n={row.n_qubits} "
-        f"cpu={row.cpu_time_seconds if row.cpu_time_seconds is not None else 'error'}s "
+        f"cpu={row.cpu_time_seconds if row.cpu_time_seconds is not None else 'skipped'}s "
         f"grover_qpu={row.grover_time_seconds if row.grover_time_seconds is not None else 'error'}s "
         f"mode={row.mode_used} backend={row.backend or '-'} "
         f"top={row.most_frequent_state or '-'} error={row.error or '-'}"
@@ -374,8 +402,10 @@ def main() -> None:
     print("Experiment runner")
     print("=" * 17)
     print(f"Mode: {args.mode}")
+    print(f"CPU mode: {args.cpu_mode}")
     print(f"Backend override: {args.backend or 'auto'}")
     print(f"Shots: {args.shots}")
+    print(f"Max CPU qubits: {args.max_cpu_qubits}")
     print(f"Resume: {args.resume}")
     print(f"Output directory: {output_dir}")
     print("Large Grover circuits may fail because of circuit depth, transpilation limits, or hardware constraints.")
@@ -389,10 +419,12 @@ def main() -> None:
         try:
             row = execute_one_run(
                 mode=args.mode,
+                cpu_mode=args.cpu_mode,
                 n_qubits=n_qubits,
                 shots=args.shots,
                 target=target,
                 backend_name=args.backend,
+                max_cpu_qubits=args.max_cpu_qubits,
             )
         except Exception as exc:
             row = error_row(n_qubits=n_qubits, shots=args.shots, target=target, error=exc)

@@ -120,6 +120,12 @@ Example:
 python src/experiment_runner.py --mode ibm --backend ibm_kingston --shots 1 --max-qubits 36 --target-mode last
 ```
 
+Run only the IBM/Grover side and skip the classical CPU benchmark entirely:
+
+```bash
+python src/experiment_runner.py --mode ibm --cpu-mode skip --backend ibm_kingston --shots 1 --max-qubits 36
+```
+
 Resume an existing batch and only run missing sizes:
 
 ```bash
@@ -140,3 +146,4 @@ Important notes:
 - Large `n_qubits` values may fail or become impractical because of circuit depth, transpilation limits, queueing, shot costs, and hardware constraints.
 - The runner catches per-size execution errors and continues unless `--stop-on-error true` is set.
 - With `--resume true`, the runner loads the existing CSV, skips already completed qubit sizes, updates the CSV and JSON, and rebuilds the runtime plot from the updated CSV.
+- With `--cpu-mode skip`, the runner performs only the Grover/IBM portion and does not execute the classical brute-force benchmark.
