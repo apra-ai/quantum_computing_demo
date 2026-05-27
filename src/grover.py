@@ -29,17 +29,53 @@ class GroverRunResult:
     quantum_runtime_seconds: float | None = None
     wall_clock_seconds: float | None = None
     queue_time_seconds: float | None = None
-    job_id: str | None = None
+    job_id: str | None = None                                                                                                                                                                                       
     log_file_path: str | None = None
     fallback_reason: str | None = None
 
 
+# =============================================================================
+# Grover building blocks
+#
+# This file is grouped by the 4 conceptual stages of Grover's algorithm:
+#
+#   1. SUPERPOSITION         -> see section "1. SUPERPOSITION / QUANTUM REGISTER"
+#                               (Hadamards on all qubits in build_grover_circuit)
+#   2. ORACLE                -> see section "2. ORACLE"
+#                               (build_phase_oracle)
+#   3. AMPLITUDE AMPLIFICATION -> see section "3. AMPLITUDE AMPLIFICATION"
+#                               (build_diffusion_operator + iteration loop)
+#   4. MEASUREMENT           -> see section "4. MEASUREMENT"
+#                               (circuit.measure + backend execution further below)
+#
+# Supporting helpers are grouped into their own sections below the 4 stages:
+#
+#   - MEASUREMENT POST-PROCESSING  (count normalization, sampler decoding)
+#   - LOGGING / CIRCUIT SERIALIZATION
+#   - IBM RUNTIME METRICS          (queue + pure quantum time)
+#   - RESULT ASSEMBLY              (_build_run_result)
+#   - BACKEND EXECUTION ENTRY POINTS (run_grover_* functions)
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Iteration count helper
+#
+# Used by stage 3 (Amplitude Amplification) to decide how often Oracle and
+# Diffuser are repeated. Formula: floor(pi/4 * sqrt(N)).
+# -----------------------------------------------------------------------------
 def calculate_grover_iterations(n_qubits: int) -> int:
     """Return the standard textbook Grover iteration count."""
 
     return floor(pi / 4 * sqrt(2**n_qubits))
 
 
+# -----------------------------------------------------------------------------
+# Shared low-level helper
+#
+# Multi-controlled phase flip on the all-ones state.
+# Used inside both the Oracle (stage 2) and the Diffuser (stage 3).
+# -----------------------------------------------------------------------------
 def _apply_multi_controlled_phase_flip(circuit: QuantumCircuit, qubits: list[int]) -> None:
     """Apply a phase flip to the all-ones state of the given qubits."""
 
@@ -51,6 +87,13 @@ def _apply_multi_controlled_phase_flip(circuit: QuantumCircuit, qubits: list[int
     circuit.h(target_qubit)
 
 
+# =============================================================================
+# 2. ORACLE
+#
+# Marks the target bitstring omega by flipping its phase:
+#     O_f |x> = -|x|  if x == omega
+#     O_f |x> =  |x|  otherwise
+# =============================================================================
 def build_phase_oracle(target: str) -> QuantumCircuit:
     """Build a phase oracle that marks one target bitstring."""
 
@@ -58,12 +101,15 @@ def build_phase_oracle(target: str) -> QuantumCircuit:
     oracle = QuantumCircuit(n_qubits, name="Oracle")
     target_by_qubit = target[::-1]
 
+    # Flip qubits that are 0 in the target so the marker fires on |target>.
     for qubit_index, bit in enumerate(target_by_qubit):
         if bit == "0":
             oracle.x(qubit_index)
 
+    # Apply the phase flip on the (now aligned) all-ones state.
     _apply_multi_controlled_phase_flip(oracle, list(range(n_qubits)))
 
+    # Undo the temporary X gates so only the phase of |target> is changed.
     for qubit_index, bit in enumerate(target_by_qubit):
         if bit == "0":
             oracle.x(qubit_index)
@@ -71,6 +117,13 @@ def build_phase_oracle(target: str) -> QuantumCircuit:
     return oracle
 
 
+# =============================================================================
+# 3. AMPLITUDE AMPLIFICATION (Diffuser part)
+#
+# The diffuser reflects all amplitudes around their mean. Combined with the
+# Oracle this forms one Grover iteration G = (2|s><s| - I) O_f, which boosts
+# the amplitude of the marked state.
+# =============================================================================
 def build_diffusion_operator(n_qubits: int) -> QuantumCircuit:
     """Build the standard Grover diffusion operator."""
 
@@ -85,28 +138,53 @@ def build_diffusion_operator(n_qubits: int) -> QuantumCircuit:
     return diffuser
 
 
+# =============================================================================
+# Full Grover circuit
+#
+# This is where stages 1, 3 and 4 are wired together in order:
+#   1. SUPERPOSITION       -> Hadamards on all qubits
+#   3. AMPLITUDE AMPLIFY   -> repeat (Oracle + Diffuser) for `iterations` rounds
+#   4. MEASUREMENT         -> measure all qubits into the classical register
+# =============================================================================
 def build_grover_circuit(target: str) -> tuple[QuantumCircuit, int]:
     """Build the complete Grover search circuit for the chosen target."""
 
     n_qubits = len(target)
     iterations = calculate_grover_iterations(n_qubits)
 
+    # ---- 1. SUPERPOSITION / QUANTUM REGISTER --------------------------------
+    # Allocate one quantum register for the search qubits and one classical
+    # register that will receive the measurement results.
     quantum_register = QuantumRegister(n_qubits, "q")
     classical_register = ClassicalRegister(n_qubits, "meas")
     circuit = QuantumCircuit(quantum_register, classical_register, name="GroverSearch")
 
+    # Build the reusable sub-circuits for stages 2 and 3.
     oracle = build_phase_oracle(target)
     diffuser = build_diffusion_operator(n_qubits)
 
+    # Put all qubits into uniform superposition |s> = 1/sqrt(N) * sum_x |x>.
     circuit.h(quantum_register)
+
+    # ---- 3. AMPLITUDE AMPLIFICATION ----------------------------------------
+    # Repeat (Oracle + Diffuser) approximately pi/4 * sqrt(N) times.
     for _ in range(iterations):
         circuit.compose(oracle, qubits=quantum_register, inplace=True)
         circuit.compose(diffuser, qubits=quantum_register, inplace=True)
 
+    # ---- 4. MEASUREMENT ----------------------------------------------------
+    # Collapse the amplified state into a classical bitstring.
     circuit.measure(quantum_register, classical_register)
     return circuit, iterations
 
 
+# =============================================================================
+# MEASUREMENT POST-PROCESSING (helpers for stage 4)
+#
+# After the backend returns raw counts we still need to make them readable
+# (fill in zero entries) and, for IBM SamplerV2, decode them from the
+# primitive result structure.
+# =============================================================================
 def _normalize_counts(counts: dict[str, int], n_qubits: int) -> dict[str, int]:
     """Fill in missing states so plots and summaries stay easy to read."""
 
@@ -117,6 +195,13 @@ def _normalize_counts(counts: dict[str, int], n_qubits: int) -> dict[str, int]:
     return normalized_counts
 
 
+# =============================================================================
+# LOGGING / CIRCUIT SERIALIZATION
+#
+# Each Grover run is dumped as a JSON file under outputs/logs so you can
+# inspect the circuit, transpiled circuit and the response from the backend
+# after the fact.
+# =============================================================================
 def _outputs_log_dir() -> Path:
     """Return the log directory used for execution traces."""
 
@@ -149,6 +234,12 @@ def write_execution_log(log_payload: dict[str, object]) -> str:
     return str(log_path)
 
 
+# =============================================================================
+# IBM RUNTIME METRICS (queue + pure quantum time)
+#
+# Helpers that pull timing information out of an IBM Runtime job so we can
+# separate "time spent waiting in the queue" from "pure time on QPU".
+# =============================================================================
 def _parse_runtime_timestamp(value: str | None) -> datetime | None:
     """Parse IBM Runtime timestamps when present."""
 
@@ -220,6 +311,12 @@ def _extract_runtime_metrics(job) -> dict[str, object] | None:
     return metrics if isinstance(metrics, dict) else None
 
 
+# =============================================================================
+# RESULT ASSEMBLY
+#
+# Wraps counts, timing info and metadata into a GroverRunResult and writes the
+# JSON execution log.
+# =============================================================================
 def _build_run_result(
     *,
     target: str,
@@ -303,6 +400,13 @@ def _extract_sampler_counts(primitive_result) -> tuple[dict[str, int], object]:
     return dict(register_data.get_counts()), pub_result.metadata
 
 
+# =============================================================================
+# 4. MEASUREMENT / BACKEND EXECUTION (entry points)
+#
+# The functions below take the prepared Grover circuit, transpile it for the
+# selected backend (simulator or IBM hardware), run it, and collect the
+# measurement counts that the rest of the demo turns into probabilities.
+# =============================================================================
 def run_grover_with_backend(
     target: str,
     shots: int,
@@ -314,9 +418,12 @@ def run_grover_with_backend(
 ) -> GroverRunResult:
     """Execute the Grover circuit on any backend exposing a run method."""
 
+    # Build stages 1-4 of the algorithm into a single circuit.
     circuit, iterations = build_grover_circuit(target)
+    # Adapt the abstract circuit to the concrete backend gate set.
     transpiled_circuit = transpile(circuit, backend)
     start_time = perf_counter()
+    # Submit the circuit to the backend (stage 4: measurement on hardware/sim).
     job = backend.run(transpiled_circuit, shots=shots)
     job_id_getter = getattr(job, "job_id", None)
     job_id = str(job_id_getter()) if callable(job_id_getter) else None
@@ -355,9 +462,12 @@ def run_grover_with_sampler(
 ) -> GroverRunResult:
     """Execute the Grover circuit through a SamplerV2-compatible primitive."""
 
+    # Build stages 1-4 of the algorithm into a single circuit.
     circuit, iterations = build_grover_circuit(target)
+    # Adapt the abstract circuit to the IBM backend's native gate set.
     transpiled_circuit = transpile(circuit, backend)
     start_time = perf_counter()
+    # Stage 4: measurement happens on real IBM hardware through the sampler.
     job = sampler.run([transpiled_circuit], shots=shots)
     job_id_getter = getattr(job, "job_id", None)
     job_id = str(job_id_getter()) if callable(job_id_getter) else None
